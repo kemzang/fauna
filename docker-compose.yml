@@ -1,18 +1,17 @@
 services:
   # ─── Nœud 1 — PC Principal (point d'entrée du cluster) ───────────────────
   fauna-node1:
-    image: fauna/faunadb:4.5.0
+    image: fauna/faunadb:latest
     container_name: fauna-node1
     ports:
-      - "8443:8443"   # API FQL
-      - "8444:8444"   # Admin
+      - "8443:8443"
     volumes:
       - fauna-node1-data:/var/lib/faunadb
       - fauna-node1-logs:/var/log/faunadb
 
   # ─── Nœud 2 ───────────────────────────────────────────────────────────────
   fauna-node2:
-    image: fauna/faunadb:4.5.0
+    image: fauna/faunadb:latest
     container_name: fauna-node2
     ports:
       - "8445:8443"
@@ -25,7 +24,7 @@ services:
 
   # ─── Nœud 3 ───────────────────────────────────────────────────────────────
   fauna-node3:
-    image: fauna/faunadb:4.5.0
+    image: fauna/faunadb:latest
     container_name: fauna-node3
     ports:
       - "8446:8443"
