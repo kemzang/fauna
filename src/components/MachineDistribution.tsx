@@ -1,144 +1,213 @@
 import { useEffect, useState } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { Monitor, Globe } from 'lucide-react';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, PieChart, Pie, Cell, RadarChart,
+  PolarGrid, PolarAngleAxis, Radar, Legend,
+} from 'recharts';
+import { Monitor, Globe, Cpu, MemoryStick, Wifi, Clock } from 'lucide-react';
 import { getMachineStats } from '../services/fauna';
 import type { MachineStats } from '../types';
 
-const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
+const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
+const REGION_FLAGS: Record<string, string> = {
+  Europe: '🇪🇺', Afrique: '🌍', Asie: '🌏', Amérique: '🌎',
+  America: '🌎', Africa: '🌍', Asia: '🌏',
+};
 
 export default function MachineDistribution() {
   const [stats, setStats] = useState<MachineStats[]>([]);
   const [loading, setLoading] = useState(true);
+  const [activeMetric, setActiveMetric] = useState<'documents' | 'cpu' | 'memory' | 'network' | 'latency'>('documents');
 
   useEffect(() => {
-    const fetchStats = async () => {
+    const fetch = async () => {
       try {
-        const machineStats = await getMachineStats();
-        setStats(machineStats);
-      } catch (error) {
-        console.error('Error fetching machine stats:', error);
+        const s = await getMachineStats();
+        setStats(s);
+      } catch (e) {
+        console.error(e);
       } finally {
         setLoading(false);
       }
     };
-
-    fetchStats();
-    const interval = setInterval(fetchStats, 3000); // Update every 3 seconds
-
+    fetch();
+    const interval = setInterval(fetch, 3000);
     return () => clearInterval(interval);
   }, []);
 
-  if (loading) {
-    return (
-      <div className="bg-white rounded-2xl p-8 shadow-xl">
-        <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
-        </div>
-      </div>
-    );
-  }
+  if (loading) return (
+    <div className="bg-white rounded-xl p-6 shadow flex items-center justify-center h-full">
+      <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" />
+    </div>
+  );
 
-  const chartData = stats.map(stat => ({
-    name: stat.node,
-    documents: stat.count,
-    avgLatency: Math.round(stat.avgLatency * 100) / 100
+  const barData = stats.map((s, i) => ({
+    name: s.node.replace('PC', 'PC'),
+    documents: s.count,
+    cpu: parseFloat(s.avgCpu.toFixed(1)),
+    memory: parseFloat(s.avgMemory.toFixed(1)),
+    network: parseFloat(s.avgNetwork.toFixed(0)),
+    latency: parseFloat(s.avgLatency.toFixed(1)),
+    color: COLORS[i % COLORS.length],
   }));
 
-  const totalDocuments = stats.reduce((sum, stat) => sum + stat.count, 0);
+  const radarData = stats.map(s => ({
+    node: s.node,
+    CPU: parseFloat(s.avgCpu.toFixed(1)),
+    RAM: parseFloat(s.avgMemory.toFixed(1)),
+    Réseau: parseFloat(((s.avgNetwork / 1000) * 100).toFixed(1)),
+    Latence: parseFloat(((s.avgLatency / 150) * 100).toFixed(1)),
+  }));
+
+  const metricConfig = {
+    documents: { label: 'Documents', color: '#6366f1', unit: 'docs', icon: Monitor },
+    cpu: { label: 'CPU moyen', color: '#3b82f6', unit: '%', icon: Cpu },
+    memory: { label: 'RAM moyenne', color: '#10b981', unit: '%', icon: MemoryStick },
+    network: { label: 'Réseau moyen', color: '#f59e0b', unit: 'MB/s', icon: Wifi },
+    latency: { label: 'Latence moyenne', color: '#ef4444', unit: 'ms', icon: Clock },
+  };
+
+  const cfg = metricConfig[activeMetric];
+  const total = stats.reduce((s, m) => s + m.count, 0);
 
   return (
-    <div className="bg-white rounded-2xl p-8 shadow-xl">
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center space-x-3">
-          <Monitor className="w-6 h-6 text-indigo-600" />
-          <h2 className="text-xl font-semibold text-gray-800">Répartition par Machine</h2>
+    <div className="bg-white rounded-xl shadow flex flex-col h-full overflow-hidden">
+      {/* Header */}
+      <div className="px-4 pt-3 pb-2 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
+        <div className="flex items-center gap-2">
+          <Monitor className="w-4 h-4 text-indigo-600" />
+          <span className="font-semibold text-gray-800 text-sm">Répartition par Machine</span>
         </div>
-        <div className="flex items-center space-x-2">
-          <Globe className="w-4 h-4 text-gray-500" />
-          <span className="text-sm text-gray-500">
-            {stats.length} machines actives
-          </span>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Bar Chart */}
-        <div>
-          <h3 className="text-sm font-medium text-gray-600 mb-4">Volume de données par machine</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis 
-                dataKey="name" 
-                tick={{ fontSize: 12 }}
-                angle={-45}
-                textAnchor="end"
-                height={60}
-              />
-              <YAxis tick={{ fontSize: 12 }} />
-              <Tooltip 
-                formatter={(value, name) => [
-                  name === 'documents' ? `${value} docs` : `${value}ms`,
-                  name === 'documents' ? 'Documents' : 'Latence moyenne'
-                ]}
-              />
-              <Legend />
-              <Bar dataKey="documents" fill="#3B82F6" name="Documents" />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-
-        {/* Pie Chart */}
-        <div>
-          <h3 className="text-sm font-medium text-gray-600 mb-4">Distribution en pourcentage</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <PieChart>
-              <Pie
-                data={chartData}
-                cx="50%"
-                cy="50%"
-                labelLine={false}
-                label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                outerRadius={80}
-                fill="#8884d8"
-                dataKey="documents"
-              >
-                {chartData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip formatter={(value) => [`${value} docs`, 'Documents']} />
-            </PieChart>
-          </ResponsiveContainer>
+        <div className="flex items-center gap-1 text-xs text-gray-500">
+          <Globe className="w-3.5 h-3.5" />
+          <span>{stats.length} nœuds · {total.toLocaleString()} docs</span>
         </div>
       </div>
 
-      {/* Stats Summary */}
-      <div className="mt-8 grid grid-cols-2 md:grid-cols-4 gap-4">
-        {stats.map((stat, index) => (
-          <div key={stat.node} className="bg-gray-50 rounded-lg p-4">
-            <div className="flex items-center justify-between mb-2">
-              <div 
-                className="w-3 h-3 rounded-full"
-                style={{ backgroundColor: COLORS[index % COLORS.length] }}
-              ></div>
-              <span className="text-xs text-gray-500">{stat.node}</span>
-            </div>
-            <div className="text-lg font-semibold text-gray-800">
-              {stat.count.toLocaleString()}
-            </div>
-            <div className="text-xs text-gray-500">
-              {stat.avgLatency.toFixed(2)}ms avg
-            </div>
+      {/* Sélecteur de métrique */}
+      <div className="px-4 py-2 flex gap-1 flex-shrink-0">
+        {(Object.keys(metricConfig) as Array<keyof typeof metricConfig>).map(key => {
+          const Icon = metricConfig[key].icon;
+          return (
+            <button
+              key={key}
+              onClick={() => setActiveMetric(key)}
+              className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
+                activeMetric === key
+                  ? 'bg-indigo-100 text-indigo-700'
+                  : 'text-gray-500 hover:bg-gray-100'
+              }`}
+            >
+              <Icon className="w-3 h-3" />
+              {metricConfig[key].label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Graphiques */}
+      <div className="flex-1 grid grid-cols-2 gap-2 px-4 pb-2 min-h-0">
+        {/* Bar chart */}
+        <div className="flex flex-col min-h-0">
+          <div className="text-xs text-gray-500 mb-1 font-medium">{cfg.label} par machine</div>
+          <div className="flex-1 min-h-0">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={barData} margin={{ top: 4, right: 8, left: -10, bottom: 20 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-30} textAnchor="end" />
+                <YAxis tick={{ fontSize: 10 }} />
+                <Tooltip
+                  formatter={(v) => [`${v} ${cfg.unit}`, cfg.label]}
+                  contentStyle={{ fontSize: 11 }}
+                />
+                <Bar dataKey={activeMetric} radius={[4, 4, 0, 0]}>
+                  {barData.map((entry, i) => (
+                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
           </div>
-        ))}
+        </div>
+
+        {/* Pie chart (documents uniquement) ou Radar */}
+        <div className="flex flex-col min-h-0">
+          {activeMetric === 'documents' ? (
+            <>
+              <div className="text-xs text-gray-500 mb-1 font-medium">Distribution %</div>
+              <div className="flex-1 min-h-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={barData}
+                      dataKey="documents"
+                      nameKey="name"
+                      cx="50%" cy="50%"
+                      outerRadius="70%"
+                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      labelLine={false}
+                    >
+                      {barData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                    </Pie>
+                    <Tooltip formatter={(v) => [`${v} docs`]} contentStyle={{ fontSize: 11 }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="text-xs text-gray-500 mb-1 font-medium">Profil système (normalisé)</div>
+              <div className="flex-1 min-h-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <RadarChart data={[
+                    { metric: 'CPU', ...Object.fromEntries(stats.map(s => [s.node, s.avgCpu])) },
+                    { metric: 'RAM', ...Object.fromEntries(stats.map(s => [s.node, s.avgMemory])) },
+                    { metric: 'Réseau', ...Object.fromEntries(stats.map(s => [s.node, (s.avgNetwork / 1000) * 100])) },
+                    { metric: 'Latence', ...Object.fromEntries(stats.map(s => [s.node, (s.avgLatency / 150) * 100])) },
+                  ]}>
+                    <PolarGrid />
+                    <PolarAngleAxis dataKey="metric" tick={{ fontSize: 10 }} />
+                    {stats.map((s, i) => (
+                      <Radar key={s.node} name={s.node} dataKey={s.node}
+                        stroke={COLORS[i % COLORS.length]} fill={COLORS[i % COLORS.length]} fillOpacity={0.15} />
+                    ))}
+                    <Legend iconSize={8} wrapperStyle={{ fontSize: 10 }} />
+                    <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => [`${v.toFixed(1)}%`]} />
+                  </RadarChart>
+                </ResponsiveContainer>
+              </div>
+            </>
+          )}
+        </div>
       </div>
+
+      {/* Tableau récapitulatif */}
+      {stats.length > 0 && (
+        <div className="px-4 pb-3 flex-shrink-0">
+          <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.min(stats.length, 4)}, 1fr)` }}>
+            {stats.map((s, i) => (
+              <div key={s.node} className="rounded-lg p-2 text-xs" style={{ backgroundColor: COLORS[i % COLORS.length] + '15', borderLeft: `3px solid ${COLORS[i % COLORS.length]}` }}>
+                <div className="font-bold text-gray-800 flex items-center gap-1">
+                  <span>{REGION_FLAGS[s.region] || '🖥️'}</span>
+                  <span>{s.node}</span>
+                </div>
+                <div className="text-gray-500 mt-0.5">{s.region}</div>
+                <div className="mt-1 space-y-0.5">
+                  <div className="flex justify-between"><span className="text-gray-500">Docs</span><span className="font-semibold">{s.count.toLocaleString()}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">CPU</span><span className="font-semibold">{s.avgCpu.toFixed(1)}%</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">RAM</span><span className="font-semibold">{s.avgMemory.toFixed(1)}%</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">Latence</span><span className={`font-semibold ${s.avgLatency > 100 ? 'text-red-600' : s.avgLatency > 50 ? 'text-yellow-600' : 'text-green-600'}`}>{s.avgLatency.toFixed(1)}ms</span></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {stats.length === 0 && (
-        <div className="text-center py-12 text-gray-500">
-          <Monitor className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-          <p>Aucune donnée reçue pour le moment</p>
-          <p className="text-sm mt-2">Lancez les scripts d'injection pour voir les données apparaître</p>
+        <div className="flex-1 flex flex-col items-center justify-center text-gray-400 pb-4">
+          <Monitor className="w-10 h-10 mb-2 text-gray-200" />
+          <p className="text-sm">Aucune donnée — lancez les scripts d'injection</p>
         </div>
       )}
     </div>

@@ -10,8 +10,13 @@ export interface TelemetryData {
 
 export interface MachineStats {
   node: string;
+  region: string;
   count: number;
   avgLatency: number;
+  avgCpu: number;
+  avgMemory: number;
+  avgNetwork: number;
+  lastSeen: number;
 }
 
 export interface LatencyData {

@@ -1,4 +1,42 @@
 services:
+  # ─── Nœud 1 — PC Principal (point d'entrée du cluster) ───────────────────
+  fauna-node1:
+    image: fauna/faunadb:4.5.0
+    container_name: fauna-node1
+    ports:
+      - "8443:8443"   # API FQL
+      - "8444:8444"   # Admin
+    volumes:
+      - fauna-node1-data:/var/lib/faunadb
+      - fauna-node1-logs:/var/log/faunadb
+
+  # ─── Nœud 2 ───────────────────────────────────────────────────────────────
+  fauna-node2:
+    image: fauna/faunadb:4.5.0
+    container_name: fauna-node2
+    ports:
+      - "8445:8443"
+    command: ["--join", "fauna-node1"]
+    depends_on:
+      - fauna-node1
+    volumes:
+      - fauna-node2-data:/var/lib/faunadb
+      - fauna-node2-logs:/var/log/faunadb
+
+  # ─── Nœud 3 ───────────────────────────────────────────────────────────────
+  fauna-node3:
+    image: fauna/faunadb:4.5.0
+    container_name: fauna-node3
+    ports:
+      - "8446:8443"
+    command: ["--join", "fauna-node1"]
+    depends_on:
+      - fauna-node1
+    volumes:
+      - fauna-node3-data:/var/lib/faunadb
+      - fauna-node3-logs:/var/log/faunadb
+
+  # ─── CouchDB (pour le benchmark) ──────────────────────────────────────────
   couchdb:
     image: couchdb:3
     container_name: couchdb
@@ -7,3 +45,11 @@ services:
     environment:
       COUCHDB_USER: admin
       COUCHDB_PASSWORD: admin
+
+volumes:
+  fauna-node1-data:
+  fauna-node1-logs:
+  fauna-node2-data:
+  fauna-node2-logs:
+  fauna-node3-data:
+  fauna-node3-logs:
