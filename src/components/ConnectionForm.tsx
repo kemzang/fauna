@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Server, Lock, Globe, Hash, Loader2 } from 'lucide-react';
-import { initializeFauna, testConnection, ensureCollection, createTelemetryIndex } from '../services/fauna';
+import { initializeFauna, initializeCouchDB, testConnection, ensureCollection, createTelemetryIndex } from '../services/fauna'; // eslint-disable-line @typescript-eslint/no-unused-vars
 import type { ConnectionConfig } from '../types';
 
 interface Props { onConnect: (config: ConnectionConfig) => void; }
@@ -15,6 +15,7 @@ export default function ConnectionForm({ onConnect }: Props) {
     setLoading(true); setError('');
     try {
       initializeFauna(config.secret, config.domain, config.port);
+      initializeCouchDB(config.domain, 5984);
       if (!await testConnection()) throw new Error('Impossible de se connecter à Fauna. Vérifiez vos paramètres.');
       await ensureCollection('Telemetry');
       await createTelemetryIndex();

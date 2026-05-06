@@ -131,3 +131,40 @@ export const getLatencyData = async (limit: number = 100): Promise<LatencyData[]
     }));
   } catch { return []; }
 };
+
+// ─── Stats CouchDB en temps réel (comparaison live) ──────────────────────────
+
+let couchConfig: { domain: string; port: number; user: string; password: string } | null = null;
+
+export const initializeCouchDB = (domain: string = 'localhost', port: number = 5984, user = 'admin', password = 'admin') => {
+  couchConfig = { domain, port, user, password };
+};
+
+export const getCouchDBDocCount = async (): Promise<number> => {
+  if (!couchConfig) return 0;
+  try {
+    const { domain, port, user, password } = couchConfig;
+    const res = await fetch(`http://${domain}:${port}/telemetry`, {
+      headers: { 'Authorization': 'Basic ' + btoa(`${user}:${password}`) }
+    });
+    if (!res.ok) return 0;
+    const json = await res.json();
+    return json.doc_count || 0;
+  } catch { return 0; }
+};
+
+export const getCouchDBAvgLatency = async (): Promise<number> => {
+  if (!couchConfig) return 0;
+  try {
+    const { domain, port, user, password } = couchConfig;
+    const res = await fetch(`http://${domain}:${port}/telemetry/_all_docs?include_docs=true&limit=200`, {
+      headers: { 'Authorization': 'Basic ' + btoa(`${user}:${password}`) }
+    });
+    if (!res.ok) return 0;
+    const json = await res.json();
+    const rows = json.rows || [];
+    if (rows.length === 0) return 0;
+    const total = rows.reduce((sum: number, r: any) => sum + (r.doc?.latency || 0), 0);
+    return total / rows.length;
+  } catch { return 0; }
+};
