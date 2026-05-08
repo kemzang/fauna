@@ -15,6 +15,8 @@ try:
     from faunadb import query as q
     from faunadb.client import FaunaClient
     from faunadb.errors import FaunaError
+    # Désactiver la vérification de version (évite l'appel à pypi.org sans internet)
+    FaunaClient.check_new_version = lambda self: None
 except ImportError:
     print("SDK faunadb manquant. Installez-le avec: pip install faunadb")
     sys.exit(1)
