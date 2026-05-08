@@ -1,162 +1,211 @@
 #!/usr/bin/env python3
 """
 Script d'injection de données pour le TP Fauna Big Data
-Utilise le SDK faunadb (FQL v4) - compatible avec fauna/faunadb Docker
+Injecte simultanément dans Fauna ET CouchDB
 """
 
 import time
 import random
 import sys
 import argparse
+import threading
 from datetime import datetime
-import concurrent.futures
+import requests
 
 try:
     from faunadb import query as q
     from faunadb.client import FaunaClient
     from faunadb.errors import FaunaError
-    # Désactiver la vérification de version (évite l'appel à pypi.org sans internet)
     FaunaClient.check_new_version = lambda self: None
 except ImportError:
-    print("SDK faunadb manquant. Installez-le avec: pip install faunadb")
+    print("SDK faunadb manquant. Installez-le avec: pip install faunadb requests")
     sys.exit(1)
 
 
-class FaunaInjector:
-    def __init__(self, fauna_host, fauna_port, secret_key, node_id, region):
-        self.client = FaunaClient(
-            secret=secret_key,
-            domain=fauna_host,
-            port=fauna_port,
-            scheme="http"
-        )
-        self.node_id = node_id
-        self.region = region
+def generate_telemetry_data(node_id, region):
+    return {
+        "timestamp": int(time.time() * 1000),
+        "node": node_id,
+        "region": region,
+        "latency": round(random.uniform(10, 150), 2),
+        "cpu": round(random.uniform(20, 90), 2),
+        "memory": round(random.uniform(30, 85), 2),
+        "network": round(random.uniform(100, 1000), 2)
+    }
 
-    def generate_telemetry_data(self):
-        return {
-            "timestamp": int(time.time() * 1000),
-            "node": self.node_id,
-            "region": self.region,
-            "latency": round(random.uniform(10, 150), 2),
-            "cpu": round(random.uniform(20, 90), 2),
-            "memory": round(random.uniform(30, 85), 2),
-            "network": round(random.uniform(100, 1000), 2)
-        }
 
-    def test_connection(self):
+# ─── Fauna ────────────────────────────────────────────────────────────────────
+
+class FaunaWriter:
+    def __init__(self, host, port, secret):
+        self.client = FaunaClient(secret=secret, domain=host, port=port, scheme="http")
+
+    def connect(self):
         try:
             self.client.query(q.now())
+            self.client.query(q.if_(
+                q.exists(q.collection("Telemetry")), True,
+                q.create_collection({"name": "Telemetry"})
+            ))
+            try:
+                self.client.query(q.if_(
+                    q.exists(q.index("all_telemetry")), True,
+                    q.create_index({"name": "all_telemetry", "source": q.collection("Telemetry")})
+                ))
+            except Exception:
+                pass
             return True
         except Exception as e:
-            print(f"Erreur: {e}")
+            print(f"[Fauna] Erreur connexion: {e}")
             return False
 
-    def ensure_collection(self):
+    def write(self, data):
+        t0 = time.time()
         try:
-            self.client.query(
-                q.if_(
-                    q.exists(q.collection("Telemetry")),
-                    True,
-                    q.create_collection({"name": "Telemetry"})
-                )
-            )
-        except FaunaError as e:
-            print(f"Avertissement collection: {e}")
+            self.client.query(q.create(q.collection("Telemetry"), {"data": data}))
+            return True, (time.time() - t0) * 1000
+        except Exception:
+            return False, 0
 
-    def inject_single_document(self):
+
+# ─── CouchDB ──────────────────────────────────────────────────────────────────
+
+class CouchWriter:
+    def __init__(self, host, port, user, password):
+        self.base = f"http://{host}:{port}"
+        self.db = "telemetry"
+        self.session = requests.Session()
+        self.session.auth = (user, password)
+        self.session.headers.update({"Content-Type": "application/json"})
+
+    def connect(self):
         try:
-            data = self.generate_telemetry_data()
-            self.client.query(
-                q.create(q.collection("Telemetry"), {"data": data})
-            )
-            return True
-        except FaunaError as e:
-            print(f"Erreur injection: {e}")
+            r = self.session.put(f"{self.base}/{self.db}")
+            return r.status_code in (201, 412)
+        except Exception as e:
+            print(f"[CouchDB] Erreur connexion: {e}")
             return False
 
-    def inject_batch(self, batch_size=10):
-        successes = 0
-        for _ in range(batch_size):
-            if self.inject_single_document():
-                successes += 1
-        return successes
+    def write(self, data):
+        t0 = time.time()
+        try:
+            r = self.session.post(f"{self.base}/{self.db}", json=data)
+            return r.status_code == 201, (time.time() - t0) * 1000
+        except Exception:
+            return False, 0
 
-    def continuous_injection(self, duration_seconds=300, batch_size=10, delay=1):
-        print(f"Démarrage injection pour {duration_seconds}s | Node: {self.node_id} | Region: {self.region}")
 
-        start_time = time.time()
-        total_injected = 0
-        total_batches = 0
+# ─── Injecteur dual ───────────────────────────────────────────────────────────
 
-        while time.time() - start_time < duration_seconds:
-            batch_start = time.time()
-            successes = self.inject_batch(batch_size)
-            total_injected += successes
-            total_batches += 1
-            elapsed = time.time() - start_time
+def run(fauna: FaunaWriter, couch: CouchWriter, node_id, region, duration, batch_size, delay):
+    lock = threading.Lock()
+    stats = {
+        "fauna": {"ok": 0, "err": 0, "lat": 0.0},
+        "couch": {"ok": 0, "err": 0, "lat": 0.0},
+    }
 
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] "
-                  f"Batch {total_batches}: {successes}/{batch_size} | "
-                  f"Total: {total_injected} | "
-                  f"Vitesse: {total_injected/elapsed:.1f} docs/s | "
-                  f"Temps: {time.time()-batch_start:.2f}s")
+    def inject_one():
+        data = generate_telemetry_data(node_id, region)
+        results = {}
 
-            if delay > 0:
-                time.sleep(delay)
+        def wf():
+            ok, lat = fauna.write(data)
+            results["fauna"] = (ok, lat)
 
-        total_time = time.time() - start_time
-        print(f"\nTerminé! {total_injected} docs en {total_time:.2f}s ({total_injected/total_time:.1f} docs/s)")
-        return total_injected
+        def wc():
+            ok, lat = couch.write(data)
+            results["couch"] = (ok, lat)
 
-    def stress_test(self, threads=4, duration_seconds=60):
-        print(f"Stress test: {threads} threads pendant {duration_seconds}s")
+        t1 = threading.Thread(target=wf)
+        t2 = threading.Thread(target=wc)
+        t1.start(); t2.start()
+        t1.join(); t2.join()
 
-        def worker(thread_id):
-            count = 0
-            start = time.time()
-            while time.time() - start < duration_seconds:
-                if self.inject_single_document():
-                    count += 1
-            print(f"Thread {thread_id}: {count} docs")
-            return count
+        with lock:
+            for db in ("fauna", "couch"):
+                ok, lat = results.get(db, (False, 0))
+                if ok:
+                    stats[db]["ok"] += 1
+                    stats[db]["lat"] += lat
+                else:
+                    stats[db]["err"] += 1
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = [executor.submit(worker, i) for i in range(threads)]
-            total = sum(f.result() for f in concurrent.futures.as_completed(futures))
+    print(f"\n{'='*60}")
+    print(f"  Injection DUAL — Fauna + CouchDB")
+    print(f"  Node: {node_id} | Région: {region} | Durée: {duration}s")
+    print(f"{'='*60}\n")
 
-        print(f"\nStress test terminé! {total} docs ({total/duration_seconds:.1f} docs/s)")
-        return total
+    start = time.time()
+    batch_num = 0
+
+    while time.time() - start < duration:
+        batch_start = time.time()
+        threads = [threading.Thread(target=inject_one) for _ in range(batch_size)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+
+        batch_num += 1
+        elapsed = time.time() - start
+        f = stats["fauna"]
+        c = stats["couch"]
+        f_lat = f["lat"] / f["ok"] if f["ok"] > 0 else 0
+        c_lat = c["lat"] / c["ok"] if c["ok"] > 0 else 0
+
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] Batch {batch_num:3d} | "
+            f"Fauna: {f['ok']:5d} docs ({f_lat:5.1f}ms) | "
+            f"CouchDB: {c['ok']:5d} docs ({c_lat:5.1f}ms) | "
+            f"{(f['ok']+c['ok'])/elapsed:.0f} ops/s"
+        )
+
+        remaining = delay - (time.time() - batch_start)
+        if remaining > 0:
+            time.sleep(remaining)
+
+    elapsed = time.time() - start
+    f = stats["fauna"]
+    c = stats["couch"]
+    print(f"\n{'='*60}")
+    print(f"  RÉSULTATS — {elapsed:.1f}s")
+    print(f"  {'':20s} {'Fauna':>12} {'CouchDB':>12}")
+    print(f"  {'Docs injectés':20s} {f['ok']:>12,} {c['ok']:>12,}")
+    print(f"  {'Erreurs':20s} {f['err']:>12,} {c['err']:>12,}")
+    f_lat = f["lat"] / f["ok"] if f["ok"] > 0 else 0
+    c_lat = c["lat"] / c["ok"] if c["ok"] > 0 else 0
+    print(f"  {'Latence moyenne':20s} {f_lat:>11.1f}ms {c_lat:>11.1f}ms")
+    print(f"{'='*60}\n")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Injecteur Fauna TP Big Data')
+    parser = argparse.ArgumentParser(description='Injecteur Dual Fauna+CouchDB')
     parser.add_argument('--host', default='localhost')
     parser.add_argument('--port', type=int, default=8443)
     parser.add_argument('--secret', required=True)
+    parser.add_argument('--couch-port', type=int, default=5984)
+    parser.add_argument('--couch-user', default='admin')
+    parser.add_argument('--couch-password', default='admin')
     parser.add_argument('--node', required=True)
     parser.add_argument('--region', required=True)
     parser.add_argument('--duration', type=int, default=300)
     parser.add_argument('--batch-size', type=int, default=10)
     parser.add_argument('--delay', type=float, default=1.0)
-    parser.add_argument('--stress', action='store_true')
-    parser.add_argument('--threads', type=int, default=4)
     args = parser.parse_args()
 
-    injector = FaunaInjector(args.host, args.port, args.secret, args.node, args.region)
-
-    print("Test de connexion à Fauna...")
-    if not injector.test_connection():
-        print("Échec de la connexion!")
+    print(f"Connexion à Fauna sur {args.host}:{args.port}...")
+    fauna = FaunaWriter(args.host, args.port, args.secret)
+    if not fauna.connect():
+        print("❌ Impossible de se connecter à Fauna")
         sys.exit(1)
-    print("Connexion réussie!")
+    print("✅ Fauna connecté")
 
-    injector.ensure_collection()
-
-    if args.stress:
-        injector.stress_test(args.threads, args.duration)
+    print(f"Connexion à CouchDB sur {args.host}:{args.couch_port}...")
+    couch = CouchWriter(args.host, args.couch_port, args.couch_user, args.couch_password)
+    if not couch.connect():
+        print("⚠️  CouchDB non disponible — injection Fauna uniquement")
     else:
-        injector.continuous_injection(args.duration, args.batch_size, args.delay)
+        print("✅ CouchDB connecté")
+
+    run(fauna, couch, args.node, args.region, args.duration, args.batch_size, args.delay)
 
 
 if __name__ == "__main__":
