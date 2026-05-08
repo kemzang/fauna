@@ -3,7 +3,7 @@
 Benchmark comparatif Fauna vs CouchDB
 Test 1 : Injection séquentielle (vitesse brute)
 Test 2 : Injection concurrente (4 threads simultanés) — montre la force des transactions ACID
-pip install requests
+pip install faunadb requests
 """
 
 import json
@@ -14,33 +14,78 @@ import threading
 from datetime import datetime
 import requests
 
+try:
+    from faunadb import query as q
+    from faunadb.client import FaunaClient as _FaunaSDK
+except ImportError:
+    print("SDK faunadb manquant. Installez-le avec: pip install faunadb")
+    sys.exit(1)
+
 lock = threading.Lock()
 
 
-# ─── Fauna ────────────────────────────────────────────────────────────────────
+# ─── Fauna (SDK v4 — même que inject_data.py) ─────────────────────────────────
 
 class FaunaClient:
     def __init__(self, host, port, secret):
-        self.url = f"http://{host}:{port}/query/1"
-        self.session = requests.Session()
-        self.session.headers.update({
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {secret}"
-        })
+        self.host = host
+        self.port = port
+        self.secret = secret
+        self.client = _FaunaSDK(secret=secret, domain=host, port=port, scheme="http")
 
     def ensure_collection(self):
-        self.session.post(self.url, json={
-            "query": 'Collection.byName("Telemetry") ?? Collection.create({ name: "Telemetry" })'
-        })
+        try:
+            self.client.query(
+                q.if_(
+                    q.exists(q.collection("Telemetry")),
+                    True,
+                    q.create_collection({"name": "Telemetry"})
+                )
+            )
+            # Créer l'index si nécessaire
+            try:
+                self.client.query(
+                    q.if_(
+                        q.exists(q.index("all_telemetry")),
+                        True,
+                        q.create_index({"name": "all_telemetry", "source": q.collection("Telemetry")})
+                    )
+                )
+            except Exception:
+                pass
+            # Créer l'index BenchmarkResults si nécessaire
+            try:
+                self.client.query(
+                    q.if_(
+                        q.exists(q.collection("BenchmarkResults")),
+                        True,
+                        q.create_collection({"name": "BenchmarkResults"})
+                    )
+                )
+                self.client.query(
+                    q.if_(
+                        q.exists(q.index("all_benchmark_results")),
+                        True,
+                        q.create_index({"name": "all_benchmark_results", "source": q.collection("BenchmarkResults")})
+                    )
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[Fauna] ensure_collection: {e}")
 
     def insert_batch(self, records):
         t0 = time.time()
-        fql = f"{json.dumps(records)}.map(doc => Telemetry.create(doc))"
-        r = self.session.post(self.url, json={"query": fql})
+        for record in records:
+            self.client.query(q.create(q.collection("Telemetry"), {"data": record}))
         latency = (time.time() - t0) * 1000
-        if r.status_code != 200:
-            raise Exception(f"HTTP {r.status_code}")
         return latency
+
+    def save_results(self, result):
+        try:
+            self.client.query(q.create(q.collection("BenchmarkResults"), {"data": result}))
+        except Exception as e:
+            print(f"[Fauna] save_results: {e}")
 
 
 # ─── CouchDB ──────────────────────────────────────────────────────────────────
@@ -197,26 +242,29 @@ def run_acid_test_fauna(fauna_writer, num_threads, increments_per_thread):
     Fauna ACID : plusieurs threads incrémentent un compteur partagé.
     Grâce aux transactions ACID, le résultat final doit être exact.
     """
-    # Crée un document compteur
-    r = fauna_writer.session.post(fauna_writer.url, json={
-        "query": 'Collection.byName("Counter") ?? Collection.create({ name: "Counter" })'
-    })
-    r = fauna_writer.session.post(fauna_writer.url, json={
-        "query": 'Counter.create({ value: 0 })'
-    })
-    doc_id = r.json().get("data", {}).get("id")
-    if not doc_id:
-        return {"expected": 0, "actual": 0, "correct": False, "conflicts": 0, "errors": 0}
-
+    client = fauna_writer.client
     errors = [0]
     lock2 = threading.Lock()
 
+    try:
+        # Crée la collection Counter si nécessaire
+        client.query(
+            q.if_(q.exists(q.collection("Counter")), True, q.create_collection({"name": "Counter"}))
+        )
+        # Crée le document compteur
+        result = client.query(q.create(q.collection("Counter"), {"data": {"value": 0}}))
+        doc_ref = result["ref"]
+    except Exception as e:
+        print(f"[Fauna ACID] Erreur init: {e}")
+        return {"expected": 0, "actual": 0, "correct": False, "conflicts": 0, "errors": 1}
+
     def increment_worker():
+        w = _FaunaSDK(secret=fauna_writer.secret, domain=fauna_writer.host, port=fauna_writer.port, scheme="http")
         for _ in range(increments_per_thread):
             try:
-                fauna_writer.session.post(fauna_writer.url, json={
-                    "query": f'let doc = Counter.byId("{doc_id}") doc.update({{ value: doc.value + 1 }})'
-                })
+                doc = w.query(q.get(doc_ref))
+                current = doc["data"]["value"]
+                w.query(q.update(doc_ref, {"data": {"value": current + 1}}))
             except Exception:
                 with lock2:
                     errors[0] += 1
@@ -228,16 +276,19 @@ def run_acid_test_fauna(fauna_writer, num_threads, increments_per_thread):
         t.join()
 
     # Lit la valeur finale
-    r = fauna_writer.session.post(fauna_writer.url, json={
-        "query": f'Counter.byId("{doc_id}") {{ value }}'
-    })
-    actual = r.json().get("data", {}).get("value", -1)
+    try:
+        final = client.query(q.get(doc_ref))
+        actual = final["data"]["value"]
+    except Exception:
+        actual = -1
+
     expected = num_threads * increments_per_thread
 
     # Nettoyage
-    fauna_writer.session.post(fauna_writer.url, json={
-        "query": f'Counter.byId("{doc_id}").delete()'
-    })
+    try:
+        client.query(q.delete(doc_ref))
+    except Exception:
+        pass
 
     return {
         "expected": expected,
@@ -329,12 +380,7 @@ def save_results(fauna_writer, seq_fauna, seq_couch, conc_fauna, conc_couch, aci
         "acid_couchdb": acid_couch
     }
     try:
-        fauna_writer.session.post(fauna_writer.url, json={
-            "query": 'Collection.byName("BenchmarkResults") ?? Collection.create({ name: "BenchmarkResults" })'
-        })
-        fauna_writer.session.post(fauna_writer.url, json={
-            "query": f"BenchmarkResults.create({json.dumps(result)})"
-        })
+        fauna_writer.save_results(result)
         print("\n✅ Résultats sauvegardés — visible dans le dashboard onglet Benchmark")
     except Exception as e:
         print(f"\n⚠️  Sauvegarde échouée: {e}")
