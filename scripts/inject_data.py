@@ -13,6 +13,12 @@ from datetime import datetime
 import requests
 
 try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+
+try:
     from faunadb import query as q
     from faunadb.client import FaunaClient
     from faunadb.errors import FaunaError
@@ -23,14 +29,25 @@ except ImportError:
 
 
 def generate_telemetry_data(node_id, region):
+    if HAS_PSUTIL:
+        cpu = psutil.cpu_percent(interval=0.1)
+        memory = psutil.virtual_memory().percent
+        net = psutil.net_io_counters()
+        network = round((net.bytes_sent + net.bytes_recv) / 1024 / 1024, 2)  # MB total
+        latency = round(random.uniform(10, 150), 2)  # latence réseau simulée
+    else:
+        cpu = round(random.uniform(20, 90), 2)
+        memory = round(random.uniform(30, 85), 2)
+        network = round(random.uniform(100, 1000), 2)
+        latency = round(random.uniform(10, 150), 2)
     return {
         "timestamp": int(time.time() * 1000),
         "node": node_id,
         "region": region,
-        "latency": round(random.uniform(10, 150), 2),
-        "cpu": round(random.uniform(20, 90), 2),
-        "memory": round(random.uniform(30, 85), 2),
-        "network": round(random.uniform(100, 1000), 2)
+        "latency": latency,
+        "cpu": cpu,
+        "memory": memory,
+        "network": network
     }
 
 

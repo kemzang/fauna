@@ -168,3 +168,22 @@ export const getCouchDBAvgLatency = async (): Promise<number> => {
     return total / rows.length;
   } catch { return 0; }
 };
+
+// ─── Stats Docker en temps réel ───────────────────────────────────────────────
+
+export interface DockerStats {
+  cpu_pct: number;
+  mem_mb: number;
+  mem_pct: number;
+  net_in_mb: number;
+  net_out_mb: number;
+  status: string;
+}
+
+export const getDockerStats = async (): Promise<{ fauna: DockerStats; couchdb: DockerStats } | null> => {
+  try {
+    const res = await fetch('http://localhost:9999/stats');
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+};

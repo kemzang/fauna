@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { LogOut, Database, Zap, Cpu, Wifi, Activity, Monitor, Clock, Users } from 'lucide-react';
-import { getMachineStats, getTotalDocumentCount, getLatencyData, getCouchDBDocCount, getCouchDBAvgLatency, initializeCouchDB } from '../services/fauna';
-import type { ConnectionConfig, MachineStats, LatencyData } from '../types';
+import { getMachineStats, getTotalDocumentCount, getLatencyData, getCouchDBDocCount, getCouchDBAvgLatency, initializeCouchDB, getDockerStats } from '../services/fauna';
+import type { ConnectionConfig, MachineStats, LatencyData, DockerStats } from '../types';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, BarChart, Bar, Cell,
@@ -18,15 +18,16 @@ export default function Dashboard({ config, onDisconnect }: Props) {
   const [machines, setMachines] = useState<MachineStats[]>([]);
   const [latHistory, setLatHistory] = useState<LatencyData[]>([]);
   const [dps, setDps] = useState(0);
+  const [dockerStats, setDockerStats] = useState<{ fauna: DockerStats; couchdb: DockerStats } | null>(null);
   const prevRef = useRef({ count: 0, time: Date.now() });
 
   useEffect(() => { initializeCouchDB(config.domain, 5984); }, [config]);
 
   useEffect(() => {
     const tick = async () => {
-      const [fc, cc, cl, ms, ld] = await Promise.all([
+      const [fc, cc, cl, ms, ld, ds] = await Promise.all([
         getTotalDocumentCount(), getCouchDBDocCount(), getCouchDBAvgLatency(),
-        getMachineStats(), getLatencyData(400),
+        getMachineStats(), getLatencyData(400), getDockerStats(),
       ]);
       const now = Date.now();
       const dt = (now - prevRef.current.time) / 1000;
@@ -35,6 +36,7 @@ export default function Dashboard({ config, onDisconnect }: Props) {
       prevRef.current = { count: fc, time: now };
       setFaunaCount(fc); setCouchCount(cc); setCouchLatency(cl);
       setMachines(ms); setLatHistory(ld);
+      if (ds) setDockerStats(ds);
     };
     tick();
     const id = setInterval(tick, 2000);
@@ -114,11 +116,11 @@ export default function Dashboard({ config, onDisconnect }: Props) {
           </div>
 
           {/* CPU */}
-          <KpiCard icon={<Cpu size={18} color="#60a5fa" />} label="CPU moyen" value={`${avgCpu.toFixed(1)}%`} color="#60a5fa" pct={avgCpu} max={100} />
+          <KpiCard icon={<Cpu size={18} color="#60a5fa" />} label="CPU Fauna" value={`${dockerStats ? dockerStats.fauna.cpu_pct.toFixed(1) : avgCpu.toFixed(1)}%`} color="#60a5fa" pct={dockerStats ? dockerStats.fauna.cpu_pct : avgCpu} max={100} />
           {/* RAM */}
-          <KpiCard icon={<Monitor size={18} color="#34d399" />} label="RAM moyenne" value={`${avgMem.toFixed(1)}%`} color="#34d399" pct={avgMem} max={100} />
+          <KpiCard icon={<Monitor size={18} color="#34d399" />} label="RAM Fauna" value={`${dockerStats ? dockerStats.fauna.mem_mb.toFixed(0) : avgMem.toFixed(0)} MB`} color="#34d399" pct={dockerStats ? dockerStats.fauna.mem_pct : avgMem} max={100} />
           {/* Réseau */}
-          <KpiCard icon={<Wifi size={18} color="#fb923c" />} label="Réseau moy." value={`${machines.length ? (machines.reduce((s,m)=>s+m.avgNetwork,0)/machines.length).toFixed(0) : 0} MB/s`} color="#fb923c" pct={machines.length ? machines.reduce((s,m)=>s+m.avgNetwork,0)/machines.length : 0} max={1000} />
+          <KpiCard icon={<Wifi size={18} color="#fb923c" />} label="Réseau Fauna" value={`${dockerStats ? (dockerStats.fauna.net_in_mb + dockerStats.fauna.net_out_mb).toFixed(0) : '0'} MB`} color="#fb923c" pct={dockerStats ? Math.min(100, (dockerStats.fauna.net_in_mb + dockerStats.fauna.net_out_mb) / 10) : 0} max={100} />
           {/* Latence */}
           <KpiCard icon={<Activity size={18} color={latColor} />} label="Latence moy." value={`${avgLat.toFixed(1)}ms`} color={latColor} pct={avgLat} max={150} badge={avgLat < 50 ? 'Excellent' : avgLat < 100 ? 'Bon' : 'Élevé'} />
         </div>
@@ -132,8 +134,8 @@ export default function Dashboard({ config, onDisconnect }: Props) {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12, marginBottom: 14 }}>
             <CompCard emoji="🦁" label="Fauna — Documents" value={fmt(faunaCount)} sub="Transactions ACID" color="#818cf8" bg="#1e1b4b" />
             <CompCard emoji="🛋️" label="CouchDB — Documents" value={fmt(couchCount)} sub="Cohérence éventuelle" color="#fb923c" bg="#1c1008" />
-            <CompCard emoji="🦁" label="Fauna — Latence" value={`${avgLat.toFixed(1)}ms`} sub={`P95: ${p95.toFixed(0)}ms · P99: ${p99.toFixed(0)}ms`} color="#818cf8" bg="#1e1b4b" />
-            <CompCard emoji="🛋️" label="CouchDB — Latence" value={`${couchLatency.toFixed(1)}ms`} sub="Sans transactions ACID" color="#fb923c" bg="#1c1008" />
+            <CompCard emoji="🦁" label="Fauna — RAM" value={`${dockerStats ? dockerStats.fauna.mem_mb.toFixed(0) : '?'} MB`} sub={`CPU: ${dockerStats ? dockerStats.fauna.cpu_pct.toFixed(1) : '?'}%`} color="#818cf8" bg="#1e1b4b" />
+            <CompCard emoji="🛋️" label="CouchDB — RAM" value={`${dockerStats ? dockerStats.couchdb.mem_mb.toFixed(0) : '?'} MB`} sub={`CPU: ${dockerStats ? dockerStats.couchdb.cpu_pct.toFixed(1) : '?'}%`} color="#fb923c" bg="#1c1008" />
           </div>
           {/* Barre de répartition */}
           <div>
