@@ -143,8 +143,8 @@ export const initializeCouchDB = (domain: string = 'localhost', port: number = 5
 export const getCouchDBDocCount = async (): Promise<number> => {
   if (!couchConfig) return 0;
   try {
-    const { domain, port, user, password } = couchConfig;
-    const res = await fetch(`http://${domain}:${port}/telemetry`, {
+    const { user, password } = couchConfig;
+    const res = await fetch(`/couchdb/telemetry`, {
       headers: { 'Authorization': 'Basic ' + btoa(`${user}:${password}`) }
     });
     if (!res.ok) return 0;
@@ -156,8 +156,8 @@ export const getCouchDBDocCount = async (): Promise<number> => {
 export const getCouchDBAvgLatency = async (): Promise<number> => {
   if (!couchConfig) return 0;
   try {
-    const { domain, port, user, password } = couchConfig;
-    const res = await fetch(`http://${domain}:${port}/telemetry/_all_docs?include_docs=true&limit=200`, {
+    const { user, password } = couchConfig;
+    const res = await fetch(`/couchdb/telemetry/_all_docs?include_docs=true&limit=200`, {
       headers: { 'Authorization': 'Basic ' + btoa(`${user}:${password}`) }
     });
     if (!res.ok) return 0;
